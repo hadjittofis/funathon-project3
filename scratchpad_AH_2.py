@@ -858,4 +858,89 @@ HeatMap(
 ).add_to(m)
 m.save("Day2_Folium_Sealed_Heatmap.html")
 m
+
+
+# %%
+# 3 Evolution — land-cover change between 2021 and 2024
+# Comparing predictions across two years reveals how land cover has 
+# evolved. This section fetches predictions for both 2021 and 2024 — 
+# first for a single tile, then for the full NUTS3 region — and quantifies 
+# the change in class shares (in percentage points). The change (pp) 
+# column is colour-coded: green for gains, red for losses.
+# 3.1 Single tile — 2021 vs 2024
+# ############################
+# Exercise 6 — Compare land-cover on a single tile between 2021 and 2024
+image_filepath_2021 = (
+    "projet-funathon/"
+    "2026/project3/data/images/LU000/2021/"
+    "4042000_2951690_0_637.tif"
+)
+
+response_2021 = requests.get(
+    f"{api_url}/predict_image",
+    params={"image": image_filepath_2021, "polygons": True},
+)
+
+gdf_tile_2021 = gpd.GeoDataFrame.from_features(
+    json.loads(response_2021.json())["features"],
+    crs="EPSG:3035",
+)
+
+gdf_tile_2021["area_m2"]    = gdf_tile_2021.geometry.area
+gdf_tile_2021["area_km2"]   = gdf_tile_2021["area_m2"] / 1e6
+gdf_tile_2021["class_name"] = gdf_tile_2021["label"].map(class_names)
+
+
+def compute_stats(gdf):
+    stats = (
+        gdf.groupby(["label", "class_name"])
+        .agg(
+            n_polygons           = ("geometry", "count"),
+            total_area_km2       = ("area_km2", "sum"),
+            mean_polygon_area_m2 = ("area_m2",  "mean"),
+            max_polygon_area_m2  = ("area_m2",  "max"),
+        )
+        .reset_index()
+        .sort_values("total_area_km2", ascending=False)
+    )
+    total = stats["total_area_km2"].sum()
+    stats["share_pct"] = (stats["total_area_km2"] / total * 100).round(2)
+    return stats, total
+
+
+stats_tile_2021, _ = compute_stats(gdf_tile_2021)
+stats_tile_2024, _ = compute_stats(gdf_tile)
+
+tile_2021 = stats_tile_2021.set_index("class_name")["share_pct"].rename("2021 (%)")
+tile_2024 = stats_tile_2024.set_index("class_name")["share_pct"].rename("2024 (%)")
+
+tile_comparison = pd.concat([tile_2021, tile_2024], axis=1).fillna(0)
+tile_comparison["change (pp)"] = (tile_comparison["2024 (%)"] - tile_comparison["2021 (%)"]).round(2)
+
+(
+    GT(tile_comparison.reset_index(), rowname_col="class_name")
+    .tab_header(title="Land-cover share — single tile, 2021 → 2024")
+    .fmt_number(decimals=1)
+    .data_color(
+        columns=["change (pp)"],
+        palette=["red", "white", "green"],
+        domain=[-5, 5],
+    )
+    .data_color(columns=["2021 (%)", "2024 (%)"], palette=["white", "steelblue"])
+)
+
+fig, ax = plt.subplots(figsize=(9, 5))
+x     = range(len(tile_comparison))
+width = 0.35
+ax.barh([i + width / 2 for i in x], tile_comparison["2021 (%)"], width, label="2021", color="steelblue")
+ax.barh([i - width / 2 for i in x], tile_comparison["2024 (%)"], width, label="2024", color="darkorange")
+ax.set_yticks(list(x))
+ax.set_yticklabels(tile_comparison.index.tolist())
+ax.set_xlabel("Share (%)")
+ax.set_title("Land-cover share — single tile, 2021 vs 2024")
+ax.legend()
+plt.tight_layout()
+plt.show()
+
+
 # %%
