@@ -10,7 +10,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import geopandas as gpd
 
-from rasterio.warp import transform_bounds
+from rasterio.warp import transform_bounds, calculate_default_transform, Resampling, reproject
+from rasterio.crs import CRS
 from matplotlib.colors import to_rgba
 from shapely.geometry import Point
 
@@ -28,11 +29,12 @@ classes = [
     ("Water (10)", "#0080FF"),
 ]
 
-# nuts_code = "CY000"
 year = 2021
-# patch_id = "6432450_1665330_1_3521"
-address = "Odysseos, Strovolos"
+address = "Kountourioti, Strovolos"
 city = "Nicosia"
+
+# Reproject bounds to WGS84
+reproject_toworld = True
 
 
 
@@ -108,11 +110,34 @@ with rasterio.open(image_url) as src:
     rgb_data = src.read([4, 3, 2])
     tile_crs = src.crs
     tile_bounds = src.bounds
+    # Extras for reproject_toworld = True. If set to False, images do not 
+    # align in interactive folium map
+    title_transform = src.transform
+    title_width = src.width
+    title_height = src.height
+    title_raw_bands = src.read([4, 3, 2]).astype(np.float32)
 
-print(f"Bounds: {tile_bounds}")
-
-rgb_overlay = np.transpose(rgb_data, (1, 2, 0)).astype(np.float32)
-rgb_overlay = np.clip(rgb_overlay / np.percentile(rgb_overlay, 98), 0, 1)
+if reproject_toworld:
+    dst_crs = CRS.from_epsg(4326)
+    dst_transform, dst_w, dst_h = calculate_default_transform(
+        tile_crs, dst_crs, title_width, title_height, *tile_bounds
+    )
+    rgb_wgs84 = np.zeros((3, dst_h, dst_w), dtype=np.float32)
+    for i in range(3):
+        reproject(
+            source=title_raw_bands[i],
+            destination=rgb_wgs84[i],
+            src_transform=title_transform,
+            src_crs=tile_crs,
+            dst_transform=dst_transform,
+            dst_crs=dst_crs,
+            resampling=Resampling.bilinear,
+        )
+    alpha = (rgb_wgs84.max(axis=0) > 0).astype(np.float32)
+    rgba = np.dstack([np.transpose(rgb_wgs84, (1, 2, 0)), alpha])
+else:
+    rgba = np.transpose(rgb_data, (1, 2, 0)).astype(np.float32)
+    rgba = np.clip(rgba / np.percentile(rgba, 98), 0, 1)
 
 
 # %%
@@ -120,19 +145,47 @@ rgb_overlay = np.clip(rgb_overlay / np.percentile(rgb_overlay, 98), 0, 1)
 with urllib.request.urlopen(label_url) as response:
     label = np.load(io.BytesIO(response.read()))
 
+if reproject_toworld:
+    dst_crs = CRS.from_epsg(4326)
+    dst_transform, dst_w, dst_h = calculate_default_transform(
+        tile_crs, dst_crs, title_width, title_height, *tile_bounds
+    )
+    
+    # Initialize destination array for the label (2D array matching dst_h and dst_w)
+    # Default to 0 (background/unclassified)
+    label_wgs84 = np.zeros((dst_h, dst_w), dtype=label.dtype)
+    
+    # Reproject using NEAREST neighbor to preserve class IDs
+    reproject(
+        source=label,
+        destination=label_wgs84,
+        src_transform=title_transform,
+        src_crs=tile_crs,
+        dst_transform=dst_transform,
+        dst_crs=dst_crs,
+        resampling=Resampling.nearest, # CRITICAL for classification labels
+    )
+    
+    final_label = label_wgs84
+else:
+    final_label = label
+
 # Convert label to RGBA
 color_lut = np.zeros((11, 4), dtype=np.float32)
 color_lut[0] = [0, 0, 0, 0]
 for i, (_, hex_color) in enumerate(classes, start=1):
     color_lut[i] = list(to_rgba(hex_color, alpha=0.7))
 
-label_rgba = color_lut[label]
+label_rgba = color_lut[final_label]
+
+
+
 
 
 # %%
 # [F] Display Image and Label in two different graphs
 fig, ax = plt.subplots(figsize=(5, 5))
-ax.imshow(rgb_overlay)
+ax.imshow(rgba)
 ax.set_title(f"Sentinel-2 — {tile_filename}")
 ax.axis("off")
 plt.tight_layout()
@@ -150,7 +203,7 @@ plt.show()
 # [G] Display Image and Label in the SAME graph, side by side
 fig, ax = plt.subplots(1, 2, figsize=(10, 5))
 
-ax[0].imshow(rgb_overlay)
+ax[0].imshow(rgba)
 ax[0].set_title(f"Sentinel-2 — {tile_filename}")
 ax[0].axis("off")
 
@@ -176,9 +229,10 @@ m = folium.Map(location=[center_lat, center_lon], zoom_start=14)
 
 # Add overlays
 folium.raster_layers.ImageOverlay(
-    image=rgb_overlay,
+    image=rgba,
     bounds=[[south, west], [north, east]],
     name="Sentinel-2 RGB",
+    opacity=0.9,
 ).add_to(m)
 
 folium.raster_layers.ImageOverlay(
@@ -193,4 +247,4 @@ folium.LayerControl().add_to(m)
 m.save("Day1_Folium.html") # Cannot display in Onyxia, need to save and open it
 m
 
-# %%
+
