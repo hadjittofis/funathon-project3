@@ -87,6 +87,7 @@ class SegformerB5(SemanticSegmentationSegformer):
         n_bands="14",
         logits: bool = True,
         freeze_encoder: bool = False,
+        type_labeler: str = "CLCplus-Backbone",
     ):
         id2label = requests.get(
             "https://minio.lab.sspcloud.fr/projet-funathon/2026/project3/data/clcplus-backbone-id2label.json"

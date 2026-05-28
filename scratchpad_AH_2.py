@@ -14,7 +14,7 @@ model = SegformerB5(
     n_bands=14,
     logits=True,             # return raw logits (not probabilities)
     freeze_encoder=False,    # keep encoder trainable
-    # type_labeler="CLCplus-Backbone",
+    type_labeler="CLCplus-Backbone",
 )
 
 
@@ -200,5 +200,49 @@ module = SegmentationModule(
     scheduler_interval="step",
 )
 
+
+# %%
+# 1.2 Load a model from public S3
+# For this funathon, a pre-trained segmentation model is publicly available on MinIO — no MLflow credentials or account required. The model artifacts are stored at:
+
+# https://minio.lab.sspcloud.fr/projet-funathon/mlflow-artifacts/
+# 1/88138b467a484c54b9935b66460413cd/artifacts/
+# Exercise 1 bis — Load a pre-trained model from public S3
+import s3fs
+import mlflow
+import requests
+import tempfile
+import numpy as np
+from pathlib import Path
+
+fs = s3fs.S3FileSystem(
+    anon=True,
+    endpoint_url="https://minio.lab.sspcloud.fr",
+)
+
+s3_run_path = "projet-funathon/mlflow-artifacts/1/88138b467a484c54b9935b66460413cd/artifacts/"
+
+s3_model_path = s3_run_path + "model"
+local_model_dir = Path(tempfile.mkdtemp()) / "model"
+
+fs.get(s3_model_path, str(local_model_dir), recursive=True)
+
+model = mlflow.pyfunc.load_model(str(local_model_dir))
+
+params_url = "https://minio.lab.sspcloud.fr/" + s3_run_path + "params.json"
+
+response = requests.get(params_url)
+run_params = response.json()
+
+n_bands = int(run_params["n_bands"])
+tiles_size = int(run_params["tiles_size"])
+augment_size = int(run_params["augment_size"])
+module_name = run_params["module_name"]
+normalization_mean = run_params["normalization_mean"][:n_bands]
+normalization_std = run_params["normalization_std"][:n_bands]
+
+print(f"n_bands={n_bands}, tiles_size={tiles_size}, augment_size={augment_size}")
+print(f"mean={normalization_mean}")
+print(f"std={normalization_std}")
 
 # %%

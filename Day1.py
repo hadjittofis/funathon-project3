@@ -145,6 +145,7 @@ ax.axis("off")
 plt.tight_layout()
 plt.show()
 
+
 # %%
 # [G] Display Image and Label in the SAME graph, side by side
 fig, ax = plt.subplots(1, 2, figsize=(10, 5))
@@ -165,7 +166,7 @@ plt.show()
 # [H] Create interactive graph and overlay on top the image and the label
 
 # Reproject bounds to WGS84
-west, south, east, north = transform_bounds(crs, "EPSG:4326", *bounds_3035)
+west, south, east, north = transform_bounds(tile_crs, "EPSG:4326", *tile_bounds)
 
 center_lat = (south + north) / 2
 center_lon = (west + east) / 2
@@ -190,3 +191,6 @@ folium.raster_layers.ImageOverlay(
 # Layer control
 folium.LayerControl().add_to(m)
 m.save("Day1_Folium.html") # Cannot display in Onyxia, need to save and open it
+m
+
+# %%
