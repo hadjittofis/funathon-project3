@@ -14,6 +14,20 @@ from rasterio.warp import transform_bounds
 from matplotlib.colors import to_rgba
 from shapely.geometry import Point
 
+# Label coloring classes
+classes = [
+    ("Sealed (1)", "#FF0100"),
+    ("Woody -- needle leaved trees (2)", "#238B23"),
+    ("Woody -- Broadleaved deciduous trees (3)", "#80FF00"),
+    ("Woody -- Broadleaved evergreen trees (4)", "#00FF00"),
+    ("Low-growing woody plants (bushes, shrubs) (5)", "#804000"),
+    ("Permanent herbaceous (6)", "#CCF24E"),
+    ("Periodically herbaceous (7)", "#FEFF80"),
+    ("Lichens and mosses (8)", "#FF81FF"),
+    ("Non- and sparsely-vegetated (9)", "#BFBFBF"),
+    ("Water (10)", "#0080FF"),
+]
+
 # nuts_code = "CY000"
 year = 2021
 # patch_id = "6432450_1665330_1_3521"
@@ -58,7 +72,6 @@ print(base_url)
 
 # %%
 # [C] Find relevant geo tile "tile_filename"
-
 # Step 1: Build the parquet URL
 parquet_url = (
     f"https://minio.lab.sspcloud.fr/projet-funathon/2026/"
@@ -90,66 +103,24 @@ image_url = f"https://minio.lab.sspcloud.fr/projet-funathon/2026/project3/data/i
 
 
 # %%
-# # Step 6: Open, read RGB, normalize and display
-# with rasterio.open(tile_url) as src:
-#     rgb_data = src.read([4, 3, 2])
-#     tile_crs = src.crs
-#     tile_bounds = src.bounds
-
-# print(f"Bounds: {tile_bounds}")
-
-# rgb = np.transpose(rgb_data, (1, 2, 0)).astype(np.float32)
-# rgb = np.clip(rgb / np.percentile(rgb, 98), 0, 1)
-
-# fig, ax = plt.subplots(figsize=(5, 5))
-# ax.imshow(rgb)
-# ax.set_title(f"Sentinel-2 — {tile_filename}")
-# ax.axis("off")
-# plt.tight_layout()
-# plt.show()
-
-
-
-# %%
-# [E] Create interactive graph and overlay on top the image with the label
-
-
-classes = [
-    ("Sealed (1)", "#FF0100"),
-    ("Woody -- needle leaved trees (2)", "#238B23"),
-    ("Woody -- Broadleaved deciduous trees (3)", "#80FF00"),
-    ("Woody -- Broadleaved evergreen trees (4)", "#00FF00"),
-    ("Low-growing woody plants (bushes, shrubs) (5)", "#804000"),
-    ("Permanent herbaceous (6)", "#CCF24E"),
-    ("Periodically herbaceous (7)", "#FEFF80"),
-    ("Lichens and mosses (8)", "#FF81FF"),
-    ("Non- and sparsely-vegetated (9)", "#BFBFBF"),
-    ("Water (10)", "#0080FF"),
-]
-
-print(label_url)
-print(image_url)
-
-# Step 1: Load satellite image
+# [D] Make image ready for displaying
 with rasterio.open(image_url) as src:
     rgb_data = src.read([4, 3, 2])
-    bounds_3035 = src.bounds
-    crs = src.crs
+    tile_crs = src.crs
+    tile_bounds = src.bounds
+
+print(f"Bounds: {tile_bounds}")
 
 rgb_overlay = np.transpose(rgb_data, (1, 2, 0)).astype(np.float32)
 rgb_overlay = np.clip(rgb_overlay / np.percentile(rgb_overlay, 98), 0, 1)
 
-# Step 2: Load the matching label
+
+# %%
+# [E] Make label ready for displaying
 with urllib.request.urlopen(label_url) as response:
     label = np.load(io.BytesIO(response.read()))
 
-# %%
-
-
-
-
-
-# Step 3: Convert label to RGBA
+# Convert label to RGBA
 color_lut = np.zeros((11, 4), dtype=np.float32)
 color_lut[0] = [0, 0, 0, 0]
 for i, (_, hex_color) in enumerate(classes, start=1):
@@ -157,16 +128,52 @@ for i, (_, hex_color) in enumerate(classes, start=1):
 
 label_rgba = color_lut[label]
 
-# Step 4: Reproject bounds to WGS84
+
+# %%
+# [F] Display Image and Label in two different graphs
+fig, ax = plt.subplots(figsize=(5, 5))
+ax.imshow(rgb_overlay)
+ax.set_title(f"Sentinel-2 — {tile_filename}")
+ax.axis("off")
+plt.tight_layout()
+plt.show()
+
+fig, ax = plt.subplots(figsize=(5, 5))
+ax.imshow(label_rgba)
+ax.set_title(f"Label — {tile_filename}")
+ax.axis("off")
+plt.tight_layout()
+plt.show()
+
+# %%
+# [G] Display Image and Label in the SAME graph, side by side
+fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+
+ax[0].imshow(rgb_overlay)
+ax[0].set_title(f"Sentinel-2 — {tile_filename}")
+ax[0].axis("off")
+
+ax[1].imshow(label_rgba)
+ax[1].set_title(f"Label — {tile_filename}")
+ax[1].axis("off")
+
+plt.tight_layout()
+plt.show()
+
+
+# %%
+# [H] Create interactive graph and overlay on top the image and the label
+
+# Reproject bounds to WGS84
 west, south, east, north = transform_bounds(crs, "EPSG:4326", *bounds_3035)
 
 center_lat = (south + north) / 2
 center_lon = (west + east) / 2
 
-# Step 5: Create the map
-m = folium.Map(location=[center_lat, center_lon], zoom_start=15)
+# Create the map
+m = folium.Map(location=[center_lat, center_lon], zoom_start=14)
 
-# Step 6: Add overlays
+# Add overlays
 folium.raster_layers.ImageOverlay(
     image=rgb_overlay,
     bounds=[[south, west], [north, east]],
@@ -180,8 +187,6 @@ folium.raster_layers.ImageOverlay(
     opacity=0.8,
 ).add_to(m)
 
-# Step 7: Layer control
+# Layer control
 folium.LayerControl().add_to(m)
-
-m
-# %%
+m.save("Day1_Folium.html") # Cannot display in Onyxia, need to save and open it

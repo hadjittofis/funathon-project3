@@ -649,8 +649,78 @@ folium.raster_layers.ImageOverlay(
 
 # Step 7: Layer control
 folium.LayerControl().add_to(m)
-
 m
+
+
+# %%
+# CODE TO REORIENT
+import folium
+
+from folium.raster_layers import ImageOverlay
+
+import rasterio
+
+from rasterio.warp import calculate_default_transform, reproject, Resampling, transform_bounds
+
+from rasterio.crs import CRS
+
+import numpy as np
+
+nuts_code = "CY000"
+
+year = "2024"
+
+tile_filename = "6462450_1640330_1_4473.tif"
+
+tile_url = f"https://minio.lab.sspcloud.fr/projet-funathon/2026/project3/data/images/{nuts_code}/{year}/{tile_filename}"
+
+# Lecture et reprojection
+
+with rasterio.open(tile_url) as src:
+    src_crs = src.crs
+    src_transform = src.transform
+    src_bounds = src.bounds
+    src_width = src.width
+    src_height = src.height
+    raw_bands = src.read([4, 3, 2]).astype(np.float32)
+
+dst_crs = CRS.from_epsg(4326)
+
+dst_transform, dst_w, dst_h = calculate_default_transform(
+    src_crs, dst_crs, src_width, src_height, *src_bounds
+)
+
+rgb_wgs84 = np.zeros((3, dst_h, dst_w), dtype=np.float32)
+
+for i in range(3):
+    reproject(
+        source=raw_bands[i],
+        destination=rgb_wgs84[i],
+        src_transform=src_transform,
+        src_crs=src_crs,
+        dst_transform=dst_transform,
+        dst_crs=dst_crs,
+        resampling=Resampling.bilinear,
+    )
+
+alpha = (rgb_wgs84.max(axis=0) > 0).astype(np.float32)
+rgba = np.dstack([np.transpose(rgb_wgs84, (1, 2, 0)), alpha])
+
+west, south, east, north = transform_bounds(src_crs, dst_crs, *src_bounds)
+
+m = folium.Map(location=[(south + north) / 2, (west + east) / 2], zoom_start=14)
+
+ImageOverlay(
+
+    image=rgba,
+
+    bounds=[[south, west], [north, east]],
+
+    opacity=0.9,
+
+).add_to(m)
+
+m.save("map_fixed.html"
 
 
 # %%
