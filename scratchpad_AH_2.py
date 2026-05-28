@@ -517,3 +517,345 @@ response_find.raise_for_status()
 image_filepath = response_find.json()
 print(f"Image found: {image_filepath}")
 
+
+# %%
+# Exercise 8 - Predict a single image via the API
+import geopandas as gpd
+from src.inference.prediction import get_satellite_image
+
+response_pred = requests.get(
+    f"{api_url}/predict_image",
+    params={"image": image_filepath, "polygons": True},
+)
+response_pred.raise_for_status()
+
+gdf_pred = gpd.GeoDataFrame.from_features(
+    json.loads(response_pred.json())["features"],
+    crs="EPSG:3035",
+)
+
+N_BANDS = 14
+minio_url = "https://minio.lab.sspcloud.fr/"
+image_url = minio_url + image_filepath
+si = get_satellite_image(image_url, n_bands=N_BANDS)
+
+rgb = np.transpose(si["array"][[3, 2, 1]], (1, 2, 0)).astype(np.float32)
+p98 = np.percentile(rgb, 98)
+rgb = np.clip(rgb / p98, 0, 1)
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+axes[0].imshow(rgb)
+axes[0].set_title("Sentinel-2 RGB (B4, B3, B2)")
+axes[0].axis("off")
+gdf_pred.plot(column="label", cmap=cmap, vmin=1, vmax=10, ax=axes[1], legend=False)
+axes[1].set_title("Predicted polygons")
+axes[1].set_aspect("equal")
+xmin, ymin, xmax, ymax = gdf_pred.total_bounds
+axes[1].set_xlim(xmin, xmax)
+axes[1].set_ylim(ymin, ymax)
+axes[1].axis("off")
+fig.legend(handles=legend_elements, loc="center left", bbox_to_anchor=(1.0, 0.5), frameon=True)
+
+# %%
+# Exercise 9 - Predict an entire NUTS3 region
+nuts_id = "CY000"
+year = 2024
+
+response_nuts = requests.get(
+    f"{api_url}/predict_nuts",
+    params={"nuts_id": nuts_id, "year": year},
+)
+response_nuts.raise_for_status()
+
+gdf_nuts = gpd.GeoDataFrame.from_features(
+    json.loads(response_nuts.json()["predictions"])["features"],
+    crs="EPSG:3035",
+)
+
+print(f"{len(gdf_nuts)} polygons received")
+print(gdf_nuts.head())
+
+
+import folium
+import numpy as np
+
+gdf_nuts_wgs84 = gdf_nuts.to_crs("EPSG:4326")
+nuts_center = gdf_nuts_wgs84.geometry.centroid.union_all().centroid
+
+m_nuts = folium.Map(location=[nuts_center.y, nuts_center.x], zoom_start=10)
+
+# Layer 1 — Satellite imagery (Esri tile service, loaded on demand)
+folium.TileLayer(
+    tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attr="Esri",
+    name="Satellite imagery",
+    show=True,
+    overlay=True,
+    control=True,
+).add_to(m_nuts)
+
+# Layer 2 — Predictions
+fg_pred = folium.FeatureGroup(name="Predicted polygons", show=True)
+folium.GeoJson(
+    gdf_nuts_wgs84,
+    style_function=lambda feature: {
+        "fillColor": label_to_color.get(feature["properties"]["label"], "#808080"),
+        "color": "black",
+        "weight": 0.3,
+        "fillOpacity": 0.6,
+    },
+    tooltip=folium.GeoJsonTooltip(fields=["label"], aliases=["Class:"]),
+).add_to(fg_pred)
+fg_pred.add_to(m_nuts)
+
+folium.LayerControl(collapsed=False).add_to(m_nuts)
+m_nuts.save("map_nuts.html")
+m_nuts
+
+# %%
+# Statistics
+# Statistics on a single Sentinel-2 image
+# Once a single tile has been predicted, you can compute land-cover 
+# statistics at the image level. This is useful for quickly inspecting 
+# the composition of a specific area before scaling up to the full NUTS3 
+# region.
+import geopandas as gpd
+import requests
+import json
+
+api_url = "https://funathon-2026-project3-api.lab.sspcloud.fr"
+
+image_filepath = (
+    "projet-funathon/"
+    "2026/project3/data/images/"
+    # "LU000/2024/"
+    # "4042000_2951690_0_637.tif"
+    "CY000/2024/"
+    "6432450_1662830_1_3615.tif"
+)
+
+response_pred = requests.get(
+    f"{api_url}/predict_image",
+    params={"image": image_filepath, "polygons": True},
+)
+
+gdf_tile = gpd.GeoDataFrame.from_features(
+    json.loads(response_pred.json())["features"],
+    crs="EPSG:3035",
+)
+
+# Same 10 CLC+ Backbone classes as in 1-acquisition.qmd / 4-inference.qmd —
+# trimmed to the short names used in tables and bar-chart labels.
+class_names = {
+    1:  "Sealed",
+    2:  "Woody – needle leaved",
+    3:  "Woody – broadleaved deciduous",
+    4:  "Woody – broadleaved evergreen",
+    5:  "Low-growing woody plants",
+    6:  "Permanent herbaceous",
+    7:  "Periodically herbaceous",
+    8:  "Lichens and mosses",
+    9:  "Non- and sparsely-vegetated",
+    10: "Water",
+}
+
+gdf_tile["area_m2"]    = gdf_tile.geometry.area
+gdf_tile["area_km2"]   = gdf_tile["area_m2"] / 1e6
+gdf_tile["class_name"] = gdf_tile["label"].map(class_names)
+
+# ########################
+# Exercise 1 — Compute land-cover area statistics for a single tile
+from great_tables import GT, style, loc
+
+stats_tile = (
+    gdf_tile.groupby(["label", "class_name"])
+    .agg(
+        n_polygons           = ("geometry", "count"),
+        total_area_km2       = ("area_km2", "sum"),
+        mean_polygon_area_m2 = ("area_m2",  "mean"),
+        max_polygon_area_m2  = ("area_m2",  "max"),
+    )
+    .reset_index()
+    .sort_values("total_area_km2", ascending=False)
+)
+
+total_km2 = stats_tile["total_area_km2"].sum()
+stats_tile["share_pct"] = (stats_tile["total_area_km2"] / total_km2 * 100).round(2)
+
+(
+    GT(stats_tile, rowname_col="class_name")
+    .tab_header(title="Land-cover statistics — single tile (CY000, 2024)")
+    .cols_label(
+        label                = "Label",
+        n_polygons           = "N polygons",
+        total_area_km2       = "Total area (km²)",
+        mean_polygon_area_m2 = "Mean area (m²)",
+        max_polygon_area_m2  = "Max area (m²)",
+        share_pct            = "Share (%)",
+    )
+    .fmt_number(columns=["total_area_km2"], decimals=2)
+    .fmt_number(columns=["mean_polygon_area_m2", "max_polygon_area_m2"], decimals=0)
+    .fmt_number(columns=["share_pct"], decimals=1)
+    .data_color(columns=["share_pct"], palette=["white", "steelblue"])
+)
+
+
+# %%
+# Exercise 2 - Highlight key land-cover categories 
+import pandas as pd
+
+sealed_km2 = stats_tile.loc[stats_tile["label"] == 1, "total_area_km2"].sum()
+forest_km2 = stats_tile.loc[stats_tile["label"].isin([2, 3, 4]), "total_area_km2"].sum()
+agri_km2 = stats_tile.loc[stats_tile["label"].isin([6, 7]), "total_area_km2"].sum()
+water_km2 = stats_tile.loc[stats_tile["label"] == 10, "total_area_km2"].sum()
+
+summary_df = pd.DataFrame(
+    {
+        "Group": ["Sealed (built-up)", "Forest", "Agricultural", "Water"],
+        "area_km2": [sealed_km2, forest_km2, agri_km2, water_km2],
+        "share_pct": [
+            sealed_km2 / total_km2 * 100,
+            forest_km2 / total_km2 * 100,
+            agri_km2 / total_km2 * 100,
+            water_km2 / total_km2 * 100,
+        ],
+    }
+)
+(
+    GT(summary_df, rowname_col="Group")
+    .tab_header(title="Key land-cover groups — single tile (CY000, 2024)")
+    .cols_label(area_km2="Area (km²)", share_pct="Share (%)")
+    .fmt_number(columns=["area_km2"], decimals=2)
+    .fmt_number(columns=["share_pct"], decimals=1)
+    .data_color(columns=["share_pct"], palette=["white", "#FF0100"])
+)
+
+# %%
+# Exercise 3 — Plot and visualise the land-cover distribution for the tile
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots(figsize=(8, 4))
+
+stats_tile.set_index("class_name")["total_area_km2"].sort_values().plot(
+    kind="barh", ax=ax, color="steelblue"
+)
+
+ax.set_xlabel("Area (km²)")
+ax.set_title("Land-cover distribution — single tile (CY000, 2024)")
+plt.tight_layout()
+plt.show()
+
+
+# %%
+# Exercise 4 — Compute land-cover statistics for the full NUTS3 region
+nuts_id = "LU000"
+year = 2024
+
+response_nuts = requests.get(
+    f"{api_url}/predict_nuts",
+    params={"nuts_id": nuts_id, "year": year},
+)
+
+gdf_nuts = gpd.GeoDataFrame.from_features(
+    json.loads(response_nuts.json()["predictions"])["features"],
+    crs="EPSG:3035",
+)
+
+gdf_nuts["area_m2"]    = gdf_nuts.geometry.area
+gdf_nuts["area_km2"]   = gdf_nuts["area_m2"] / 1e6
+gdf_nuts["class_name"] = gdf_nuts["label"].map(class_names)
+
+
+stats_nuts = (
+    gdf_nuts.groupby(["label", "class_name"])
+    .agg(
+        n_polygons           = ("geometry", "count"),
+        total_area_km2       = ("area_km2", "sum"),
+        mean_polygon_area_m2 = ("area_m2",  "mean"),
+        max_polygon_area_m2  = ("area_m2",  "max"),
+    )
+    .reset_index()
+    .sort_values("total_area_km2", ascending=False)
+)
+
+total_nuts_km2 = stats_nuts["total_area_km2"].sum()
+stats_nuts["share_pct"] = (stats_nuts["total_area_km2"] / total_nuts_km2 * 100).round(2)
+
+(
+    GT(stats_nuts, rowname_col="class_name")
+    .tab_header(title="Land-cover statistics — LU000 NUTS3 (2024)")
+    .cols_label(
+        label                = "Label",
+        n_polygons           = "N polygons",
+        total_area_km2       = "Total area (km²)",
+        mean_polygon_area_m2 = "Mean area (m²)",
+        max_polygon_area_m2  = "Max area (m²)",
+        share_pct            = "Share (%)",
+    )
+    .fmt_number(columns=["total_area_km2"], decimals=2)
+    .fmt_number(columns=["mean_polygon_area_m2", "max_polygon_area_m2"], decimals=0)
+    .fmt_number(columns=["share_pct"], decimals=1)
+    .data_color(columns=["share_pct"], palette=["white", "steelblue"])
+)
+
+tile_shares = stats_tile.set_index("class_name")["share_pct"].rename("tile_share_pct")
+nuts_shares = stats_nuts.set_index("class_name")["share_pct"].rename("nuts3_share_pct")
+comparison  = pd.concat([tile_shares, nuts_shares], axis=1).fillna(0).reset_index()
+
+(
+    GT(comparison, rowname_col="class_name")
+    .tab_header(title="Land-cover share — tile vs. NUTS3 (2024)")
+    .cols_label(**{"tile_share_pct": "Tile (%)", "nuts3_share_pct": "NUTS3 (%)"})
+    .fmt_number(decimals=1)
+    .data_color(palette=["white", "steelblue"])
+)
+
+# %%
+# Exercise 5 — Plot and visualise the area and share for the NUTS3 region
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+stats_nuts.set_index("class_name")["total_area_km2"].sort_values().plot(
+    kind="barh", ax=axes[0], color="steelblue"
+)
+axes[0].set_xlabel("Area (km²)")
+axes[0].set_title("Land-cover area — LU000 (2024)")
+
+stats_nuts.set_index("class_name")["share_pct"].sort_values().plot(
+    kind="barh", ax=axes[1], color="darkorange"
+)
+axes[1].set_xlabel("Share (%)")
+axes[1].set_title("Land-cover share — LU000 (2024)")
+
+plt.tight_layout()
+plt.show()
+
+
+
+# %%
+# Exercise 6 — Build a heatmap of sealed surface density
+import folium
+from folium.plugins import HeatMap
+
+gdf_nuts_wgs84 = gdf_nuts.to_crs("EPSG:4326")
+nuts_center    = gdf_nuts_wgs84.geometry.centroid.union_all().centroid
+
+gdf_sealed = gdf_nuts_wgs84[gdf_nuts_wgs84["label"] == 1].copy()
+gdf_sealed["centroid"] = gdf_sealed.geometry.centroid
+
+heat_data = [
+    [row.centroid.y, row.centroid.x, row.area_km2]
+    for _, row in gdf_sealed.iterrows()
+]
+
+m = folium.Map(location=[nuts_center.y, nuts_center.x], zoom_start=10)
+
+HeatMap(
+    heat_data,
+    radius=15,
+    blur=20,
+    max_zoom=13,
+    gradient={0.4: "blue", 0.6: "yellow", 0.8: "orange", 1.0: "red"},
+).add_to(m)
+m.save("Day2_Folium_Sealed_Heatmap.html")
+m
+# %%
